@@ -296,7 +296,7 @@ class MLaunchTool(BaseCmdLineTool):
                                        'setup (requires --sharded, default=1)'))
         
         init_parser.add_argument('--embeddedcsrs', default=False, action='store_true',
-                                 help=('use embedded CSRS, default=False'))        
+                                 help=('use embedded CSRS (only for MongoDB 8.0.0+), default=False'))        
 
         # As of MongoDB 3.6, all config servers must be CSRS
         init_parser.add_argument('--csrs', default=True, action='store_true',
@@ -672,7 +672,7 @@ class MLaunchTool(BaseCmdLineTool):
             self.args['csrs'] = True
 
         if self.args['embeddedcsrs'] and version.parse(self.current_version) < version.parse("8.0.0"):
-            print("--embeddedcsrs can only be used with 8.0.0+ version")
+            print("--embeddedcsrs can only be used with MongoDB 8.0.0+")
             sys.exit(1)
 
         # construct startup strings
@@ -1757,6 +1757,10 @@ class MLaunchTool(BaseCmdLineTool):
                     # --sharded was a number, name shards shard01, shard02,
                     # ... (only works with replica sets)
                     n_shards = int(args['sharded'][0])
+
+                    if args["embeddedcsrs"]:
+                        n_shards -= 1
+
                     shard_names = ['shard%.2i'
                                    % (i + 1) for i in range(n_shards)]
                 except ValueError:
