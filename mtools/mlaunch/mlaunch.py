@@ -294,6 +294,9 @@ class MLaunchTool(BaseCmdLineTool):
                                  type=int, metavar='NUM',
                                  help=('adds NUM config servers to sharded '
                                        'setup (requires --sharded, default=1)'))
+        
+        init_parser.add_argument('--embeddedcsrs', default=False, action='store_true',
+                                 help=('use embedded CSRS, default=False'))        
 
         # As of MongoDB 3.6, all config servers must be CSRS
         init_parser.add_argument('--csrs', default=True, action='store_true',
@@ -668,6 +671,10 @@ class MLaunchTool(BaseCmdLineTool):
                 version.parse(self.current_version) == version.parse("0.0.0")):
             self.args['csrs'] = True
 
+        if self.args['embeddedcsrs'] and version.parse(self.current_version) < version.parse("8.0.0"):
+            print("--embeddedcsrs can only be used with 8.0.0+ version")
+            sys.exit(1)
+
         # construct startup strings
         self._construct_cmdlines()
 
@@ -721,6 +728,8 @@ class MLaunchTool(BaseCmdLineTool):
                        "an additional '--port <startport>'\n")
             raise SystemExit(errmsg)
 
+
+        
         if self.args['sharded']:
 
             shard_names = self._get_shard_names(self.args)
@@ -737,18 +746,20 @@ class MLaunchTool(BaseCmdLineTool):
                         print('Initiating config server replica set.')
                     members = sorted(self.get_tagged(["config"]))
                     self._initiate_replset(members[0], "configRepl")
-                for shard in shard_names:
-                    # initiate replica set on first member
-                    if self.args['verbose']:
-                        print('Initiating shard replica set %s.' % shard)
-                    members = sorted(self.get_tagged([shard]))
-                    self._initiate_replset(members[0], shard)
+
+                if not (self.args['embeddedcsrs'] and int(self.args['sharded'][0]) == 1):
+                    for shard in shard_names:
+                        # initiate replica set on first member
+                        if self.args['verbose']:
+                            print('Initiating shard replica set %s.' % shard)
+                        members = sorted(self.get_tagged([shard]))
+                        self._initiate_replset(members[0], shard)
 
             # add mongos
             mongos = sorted(self.get_tagged(['mongos', 'down']))
             self._start_on_ports(mongos, wait=True, override_auth=True)
 
-            if first_init:
+            if first_init and not (self.args['embeddedcsrs'] and int(self.args['sharded'][0]) == 1):
                 # add shards
                 mongos = sorted(self.get_tagged(['mongos']))
                 con = self.client('localhost:%i' % mongos[0])
@@ -791,6 +802,12 @@ class MLaunchTool(BaseCmdLineTool):
                                 print('Shard addition failed: ' + res + ' - will retry')
 
                     time.sleep(1)
+            
+            if self.args['embeddedcsrs']:
+                if self.args['verbose']:
+                    print("Configuring embedded config servers")
+                con = self.client('localhost:%i' % mongos[0])
+                con.admin.command({"transitionFromDedicatedConfigServer": 1})
 
         elif self.args['single']:
             # just start node
