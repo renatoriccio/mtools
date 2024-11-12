@@ -290,7 +290,7 @@ class MLaunchTool(BaseCmdLineTool):
                                        'several singles or replica sets. '
                                        'Provide either list of shard names or '
                                        'number of shards.'))
-        init_parser.add_argument('--config', action='store', default=1,
+        init_parser.add_argument('--config', action='store', default=-1,
                                  type=int, metavar='NUM',
                                  help=('adds NUM config servers to sharded '
                                        'setup (requires --sharded, default=1)'))
@@ -663,8 +663,13 @@ class MLaunchTool(BaseCmdLineTool):
             sys.stderr.write('warning: server requires certificates but no'
                              ' --tlsClientCertificateKeyFile provided\n')
         # number of default config servers
-        if self.args['config'] == -1:
-            self.args['config'] = 1
+        if self.args['config'] == -1 and self.args["sharded"]:
+            if self.args['embeddedcsrs']:
+                print("Config members set to: " + str(self.args['nodes']))
+                self.args['config'] = self.args['nodes']
+            else:
+                print("Config members set to: 1")
+                self.args['config'] = 1
 
         # add the 'csrs' parameter as default for MongoDB >= 3.3.0
         if (version.parse(self.current_version) >= version.parse("3.3.0") or
@@ -674,6 +679,11 @@ class MLaunchTool(BaseCmdLineTool):
         if self.args['embeddedcsrs'] and version.parse(self.current_version) < version.parse("8.0.0"):
             print("--embeddedcsrs can only be used with MongoDB 8.0.0+")
             sys.exit(1)
+
+        # Check if embedded is used, if it's the case the number of shards should be decremented by 1
+        if self.args['embeddedcsrs'] and 'sharded' in self.args and self.args['sharded']:
+            if len(self.args['sharded']) == 1:
+                self.args['sharded'][0] = str(int(self.args['sharded'][0]) - 1)
 
         # construct startup strings
         self._construct_cmdlines()
@@ -727,8 +737,6 @@ class MLaunchTool(BaseCmdLineTool):
             errmsg += (" * You can also specify a different port range with "
                        "an additional '--port <startport>'\n")
             raise SystemExit(errmsg)
-
-
         
         if self.args['sharded']:
 
@@ -746,20 +754,18 @@ class MLaunchTool(BaseCmdLineTool):
                         print('Initiating config server replica set.')
                     members = sorted(self.get_tagged(["config"]))
                     self._initiate_replset(members[0], "configRepl")
-
-                if not (self.args['embeddedcsrs'] and int(self.args['sharded'][0]) == 1):
-                    for shard in shard_names:
-                        # initiate replica set on first member
-                        if self.args['verbose']:
-                            print('Initiating shard replica set %s.' % shard)
-                        members = sorted(self.get_tagged([shard]))
-                        self._initiate_replset(members[0], shard)
+                for shard in shard_names:
+                    # initiate replica set on first member
+                    if self.args['verbose']:
+                        print('Initiating shard replica set %s.' % shard)
+                    members = sorted(self.get_tagged([shard]))
+                    self._initiate_replset(members[0], shard)
 
             # add mongos
             mongos = sorted(self.get_tagged(['mongos', 'down']))
             self._start_on_ports(mongos, wait=True, override_auth=True)
 
-            if first_init and not (self.args['embeddedcsrs'] and int(self.args['sharded'][0]) == 1):
+            if first_init:
                 # add shards
                 mongos = sorted(self.get_tagged(['mongos']))
                 con = self.client('localhost:%i' % mongos[0])
@@ -804,10 +810,9 @@ class MLaunchTool(BaseCmdLineTool):
                     time.sleep(1)
             
             if self.args['embeddedcsrs']:
-                if self.args['verbose']:
-                    print("Configuring embedded config servers")
+                print("Configuring embedded config servers")
                 con = self.client('localhost:%i' % mongos[0])
-                con.admin.command({"transitionFromDedicatedConfigServer": 1})
+                con.admin.command({'transitionFromDedicatedConfigServer': 1})
 
         elif self.args['single']:
             # just start node
@@ -1046,12 +1051,26 @@ class MLaunchTool(BaseCmdLineTool):
             print_docs.append(None)
 
         # configs
+        # temporary list used to find the list of running nodes
+        tmp_config_list = []
+        string_config = "config server"
         for node in sorted(self.get_tagged(['config'])):
-            doc = OrderedDict([('process', 'config server'),
+            if self.cluster_running[node]:
+                status = 'running'
+                if self._check_if_embeddedcsrs():
+                    string_config = "config shard"
+            else:
+                status = 'down'
+
+            doc = OrderedDict([('process', string_config),
                               ('port', node),
-                              ('status', 'running'
-                               if self.cluster_running[node] else 'down')])
-            print_docs.append(doc)
+                              ('status', status)])
+            tmp_config_list.append(doc)
+
+        # construct the final list with the right config type
+        for item in tmp_config_list:
+            item['process'] = string_config
+            print_docs.append(item)
 
         if len(self.get_tagged(['config'])) > 0:
             print_docs.append(None)
@@ -1758,9 +1777,6 @@ class MLaunchTool(BaseCmdLineTool):
                     # ... (only works with replica sets)
                     n_shards = int(args['sharded'][0])
 
-                    if args["embeddedcsrs"]:
-                        n_shards -= 1
-
                     shard_names = ['shard%.2i'
                                    % (i + 1) for i in range(n_shards)]
                 except ValueError:
@@ -2206,6 +2222,20 @@ class MLaunchTool(BaseCmdLineTool):
         else:
             with open(keyfile, 'rb') as f:
                 return ''.join(f.readlines())
+
+    def _check_if_embeddedcsrs(self) -> bool:
+        """
+        Returns True if embedded CSRS is used
+        """
+        mongos = sorted(self.get_tagged(['mongos']))
+        con = self.client('localhost:%i' % mongos[0], readPreference="primaryPreferred")
+        try:
+            if con['config']['shards'].find_one({ '_id': 'config' }):
+                return True
+            return False
+        except OperationFailure:
+            print("WARNING: Unable to check if config server is embedded")
+            return False
 
 def main():
     tool = MLaunchTool()
