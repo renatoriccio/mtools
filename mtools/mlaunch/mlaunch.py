@@ -1820,7 +1820,7 @@ class MLaunchTool(BaseCmdLineTool):
                 command_str = re.sub(r'--keyFile \S+', '', command_str)
 
             try:
-                if os.name == 'nt':
+                if os.name == 'nt' or sys.platform == 'darwin':
                     subprocess.check_call(command_str, shell=True)
                     # create sub process on windows doesn't wait for output,
                     # wait a few seconds for mongod instance up
@@ -1830,6 +1830,8 @@ class MLaunchTool(BaseCmdLineTool):
                                             stderr=subprocess.STDOUT)
 
                 binary = command_str.split()[0]
+                if(binary == "nohup"):
+                    binary = command_str.split()[1]
                 if '--configsvr' in command_str:
                     binary = 'config server'
 
@@ -2173,11 +2175,18 @@ class MLaunchTool(BaseCmdLineTool):
                                       rs_param, newdbpath, newlogpath, port,
                                       auth_param, extra))
         else:
-            command_str = ("\"%s\" %s --dbpath \"%s\" --logpath \"%s\" "
-                           "--port %i --fork "
-                           "%s %s" % (os.path.join(path, 'mongod'), rs_param,
-                                      dbpath, logpath, port, auth_param,
-                                      extra))
+            if sys.platform == 'darwin':
+                command_str = ("nohup \"%s\" %s --dbpath \"%s\" --logpath \"%s\" "
+                            "--port %i"
+                            "%s %s >/dev/null &" % (os.path.join(path, 'mongod'), rs_param,
+                                        dbpath, logpath, port, auth_param,
+                                        extra))
+            else:
+                command_str = ("\"%s\" %s --dbpath \"%s\" --logpath \"%s\" "
+                    "--port %i --fork "
+                    "%s %s" % (os.path.join(path, 'mongod'), rs_param,
+                                dbpath, logpath, port, auth_param,
+                                extra))
 
         # store parameters in startup_info
         self.startup_info[str(port)] = command_str
@@ -2208,9 +2217,14 @@ class MLaunchTool(BaseCmdLineTool):
                                        newlogpath, port, configdb,
                                        auth_param, extra))
         else:
-            command_str = ("%s --logpath \"%s\" --port %i --configdb %s %s %s "
-                           "--fork" % (os.path.join(path, 'mongos'), logpath,
-                                       port, configdb, auth_param, extra))
+            if sys.platform == 'darwin':
+                command_str = ("nohup %s --logpath \"%s\" --port %i --configdb %s %s %s >/dev/null &"
+                            % (os.path.join(path, 'mongos'), logpath,
+                                        port, configdb, auth_param, extra))
+            else:
+                command_str = ("%s --logpath \"%s\" --port %i --configdb %s %s %s "
+                            "--fork" % (os.path.join(path, 'mongos'), logpath,
+                                        port, configdb, auth_param, extra))
 
         # store parameters in startup_info
         self.startup_info[str(port)] = command_str
